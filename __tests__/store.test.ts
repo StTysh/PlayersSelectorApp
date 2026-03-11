@@ -73,6 +73,14 @@ describe("Player CRUD", () => {
 });
 
 describe("Game flow", () => {
+  it("does not choose a group when selection is impossible", () => {
+    useStore.getState().updateConfig({ groupSize: 3 });
+    useStore.getState().chooseGroup();
+
+    expect(useStore.getState().currentRound).toBeNull();
+    expect(useStore.getState().isModalOpen).toBe(false);
+  });
+
   it("chooses a group", () => {
     useStore.getState().addPlayers(["A", "B", "C", "D", "E"]);
     useStore.getState().updateConfig({ groupSize: 2 });
@@ -144,6 +152,119 @@ describe("Game flow", () => {
     expect(useStore.getState().rounds).toHaveLength(0);
     useStore.getState().players.forEach((p) => expect(p.score).toBe(0));
   });
+
+  it("does not reroll when the current round is locked", () => {
+    useStore.getState().addPlayers(["A", "B", "C", "D"]);
+    useStore.getState().updateConfig({ groupSize: 2 });
+    useStore.getState().chooseGroup();
+
+    const initialIds = [...useStore.getState().currentRound!.selectedPlayerIds];
+    useStore.getState().lockSelection();
+    useStore.getState().rerollGroup();
+
+    expect(useStore.getState().currentRound!.selectedPlayerIds).toEqual(initialIds);
+  });
+
+  it("swaps a player and clears old adjustment/status bookkeeping", () => {
+    useStore.getState().addPlayers(["A", "B", "C", "D"]);
+    useStore.getState().updateConfig({ groupSize: 2 });
+    useStore.getState().chooseGroup();
+
+    const currentRound = useStore.getState().currentRound!;
+    const outId = currentRound.selectedPlayerIds[0];
+    const inId = useStore
+      .getState()
+      .players.find((p) => !currentRound.selectedPlayerIds.includes(p.id))!.id;
+
+    useStore.getState().setPlayerAdjustment(outId, 3);
+    useStore.getState().setPlayerStatus(outId, "correct");
+    useStore.getState().swapPlayer(outId, inId);
+
+    const updatedRound = useStore.getState().currentRound!;
+    expect(updatedRound.selectedPlayerIds).toContain(inId);
+    expect(updatedRound.selectedPlayerIds).not.toContain(outId);
+    expect(updatedRound.adjustments[outId]).toBeUndefined();
+    expect(updatedRound.statuses[outId]).toBeUndefined();
+    expect(updatedRound.adjustments[inId]).toBe(0);
+    expect(updatedRound.statuses[inId]).toBeNull();
+  });
+
+  it("does not swap players when the round is locked", () => {
+    useStore.getState().addPlayers(["A", "B", "C", "D"]);
+    useStore.getState().updateConfig({ groupSize: 2 });
+    useStore.getState().chooseGroup();
+
+    const currentRound = useStore.getState().currentRound!;
+    const outId = currentRound.selectedPlayerIds[0];
+    const inId = useStore
+      .getState()
+      .players.find((p) => !currentRound.selectedPlayerIds.includes(p.id))!.id;
+
+    useStore.getState().lockSelection();
+    useStore.getState().swapPlayer(outId, inId);
+
+    expect(useStore.getState().currentRound!.selectedPlayerIds).toEqual(
+      currentRound.selectedPlayerIds
+    );
+  });
+
+  it("ignores duplicate additions and clears bookkeeping on remove", () => {
+    useStore.getState().addPlayers(["A", "B", "C", "D"]);
+    useStore.getState().updateConfig({ groupSize: 2 });
+    useStore.getState().chooseGroup();
+
+    const currentRound = useStore.getState().currentRound!;
+    const existingId = currentRound.selectedPlayerIds[0];
+    const extraId = useStore
+      .getState()
+      .players.find((p) => !currentRound.selectedPlayerIds.includes(p.id))!.id;
+
+    useStore.getState().addPlayerToRound(existingId);
+    expect(useStore.getState().currentRound!.selectedPlayerIds).toHaveLength(2);
+
+    useStore.getState().addPlayerToRound(extraId);
+    expect(useStore.getState().currentRound!.selectedPlayerIds).toContain(extraId);
+
+    useStore.getState().removePlayerFromRound(existingId);
+    expect(useStore.getState().currentRound!.selectedPlayerIds).not.toContain(
+      existingId
+    );
+    expect(useStore.getState().currentRound!.adjustments[existingId]).toBeUndefined();
+    expect(useStore.getState().currentRound!.statuses[existingId]).toBeUndefined();
+  });
+
+  it("toggles a player status off when the same status is selected twice", () => {
+    useStore.getState().addPlayers(["A", "B", "C"]);
+    useStore.getState().updateConfig({ groupSize: 2 });
+    useStore.getState().chooseGroup();
+
+    const pid = useStore.getState().currentRound!.selectedPlayerIds[0];
+    useStore.getState().setPlayerStatus(pid, "correct");
+    expect(useStore.getState().currentRound!.statuses[pid]).toBe("correct");
+
+    useStore.getState().setPlayerStatus(pid, "correct");
+    expect(useStore.getState().currentRound!.statuses[pid]).toBeNull();
+  });
+
+  it("records actual applied points when round finalization clamps a negative score", () => {
+    useStore.getState().addPlayers(["A", "B", "C"]);
+    useStore.getState().players.forEach((player) => {
+      useStore.getState().updatePlayer(player.id, { score: 1 });
+    });
+    useStore.getState().updateConfig({ groupSize: 1, allowNegativePoints: false });
+    useStore.getState().chooseGroup();
+
+    const selectedId = useStore.getState().currentRound!.selectedPlayerIds[0];
+    useStore.getState().setPlayerAdjustment(selectedId, -5);
+    useStore.getState().finalizeRound();
+
+    const lastRound = useStore.getState().rounds[0];
+    const result = lastRound.results.find((r) => r.playerId === selectedId)!;
+    const updatedPlayer = useStore.getState().players.find((p) => p.id === selectedId)!;
+
+    expect(updatedPlayer.score).toBe(0);
+    expect(result.pointsAwarded).toBe(-1);
+  });
 });
 
 describe("Score management", () => {
@@ -201,5 +322,13 @@ describe("Config", () => {
     useStore.getState().adjustPlayerPoints(pid, -1);
     // Should remain at 0 since negative not allowed
     expect(useStore.getState().currentRound!.adjustments[pid]).toBe(0);
+  });
+
+  it("toggles the score sidebar", () => {
+    expect(useStore.getState().showScoreSidebar).toBe(false);
+    useStore.getState().toggleScoreSidebar();
+    expect(useStore.getState().showScoreSidebar).toBe(true);
+    useStore.getState().toggleScoreSidebar();
+    expect(useStore.getState().showScoreSidebar).toBe(false);
   });
 });
